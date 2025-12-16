@@ -1,18 +1,9 @@
 """
-DEPRECATED: Basic transformer models for anomaly detection.
-
-⚠️  NOTICE: This module is deprecated in favor of `improved_transformer.py`
-    which provides enhanced multivariate anomaly detection with:
+Basic transformer models for anomaly detection which provides
+enhanced multivariate anomaly detection with:
     - Multi-scale positional encoding
     - Feature attention mechanisms
     - Hierarchical encoding for complex patterns
-    - Variational bottleneck for uncertainty quantification
-    - Multiple anomaly scoring methods
-
-For new projects, use:
-    from src.models.improved_transformer import ImprovedTransformerAutoencoder
-
-This module is kept for backward compatibility only.
 """
 
 import torch

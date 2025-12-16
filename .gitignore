@@ -1,5 +1,8 @@
 assets/
 checkpoints_baseline_nasa/
+outputs/
+outputs/plots/
+outputs/results/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -23,9 +26,11 @@ wheels/
 .pytest_cache/
 .coverage
 htmlcov/
+.ipynb_checkpoints/
 .env
 .venv
 env/
 venv/
 ENV/
+transformer_env/
 .ruff_cache/

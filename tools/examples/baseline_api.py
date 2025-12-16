@@ -1,17 +1,19 @@
-"""Baseline NASA Transformer API.
+"""NASA Transformer API.
 
-Loads the *baseline* (non-improved) transformer autoencoder checkpoint and exposes
-HTTP endpoints for scoring and threshold-based detection on *windowed* sequences.
+Serves a trained transformer autoencoder checkpoint (produced by the current training
+scripts: `src/scripts/train_dsa_cpu.py` or `src/scripts/train_nasa_full.py`) and exposes
+HTTP endpoints for scoring and threshold-based detection on windowed sequences.
 
 Run:
-    python baseline_nasa_api.py --checkpoint checkpoints_baseline_nasa/best_model.pt
+    python tools/examples/baseline_api.py --checkpoint checkpoints_baseline_nasa/best_model.pt
 
 Then:
     curl http://127.0.0.1:8000/health
 
 Notes:
-- Input is expected to be windowed sequences shaped [N, T, F] (NASA: T=50, F=25)
-- Scores returned are per-window MSE reconstruction errors.
+- Input must be windowed sequences shaped [N, T, F] (NASA defaults: T=50, F=25).
+- Scores returned are per-window MSE reconstruction errors. Ensure the model config
+  matches the checkpoint you serve (see `build_model`).
 """
 
 from __future__ import annotations
@@ -69,7 +71,6 @@ def build_model(
     input_dim: int,
     device: torch.device,
 ) -> torch.nn.Module:
-    # Must match the architecture you trained.
     if model_type == "lightweight":
         model = create_model(
             "lightweight",
@@ -114,37 +115,39 @@ def score_windows(
     return mse.detach().cpu().numpy()
 
 
-def build_app(
-    checkpoint: str,
-    model_type: str = "lightweight",
-    input_dim: int = 25,
-    device_str: Optional[str] = None,
-) -> FastAPI:
-    device = (
-        torch.device(device_str)
-        if device_str
-        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    )
+def build_model(
+    checkpoint_path: str,
+    model_type: str,
+    input_dim: int,
+    device: torch.device,
+) -> torch.nn.Module:
+    if model_type == "lightweight":
+        # Matches default lightweight config from train_nasa_full.py (medium preset)
+        model = create_model(
+            "lightweight",
+            input_dim=input_dim,
+            d_model=96,
+            nhead=4,
+            num_layers=3,
+            dim_feedforward=384,
+            dropout=0.1,
+        )
+    elif model_type == "full":
+        # Matches default full config from train_nasa_full.py (medium preset)
+        model = create_model(
+            "full",
+            input_dim=input_dim,
+            d_model=128,
+            nhead=8,
+            num_encoder_layers=3,
+            num_decoder_layers=3,
+            dim_feedforward=512,
+            dropout=0.1,
+            activation="gelu",
+        )
+    else:
+        raise ValueError("model_type must be 'lightweight' or 'full'")
 
-    model = build_model(
-        checkpoint_path=checkpoint,
-        model_type=model_type,
-        input_dim=input_dim,
-        device=device,
-    )
-
-    app = FastAPI(title="Baseline NASA Transformer API")
-
-    @app.get("/health")
-    def health():
-        return {
-            "status": "ok",
-            "checkpoint": checkpoint,
-            "model_type": model_type,
-            "device": str(device),
-        }
-
-    @app.post("/score")
     def score(req: ScoreRequest):
         windows = _to_3d_array(req)
         scores = score_windows(model, windows, device)

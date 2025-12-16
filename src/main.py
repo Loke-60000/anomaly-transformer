@@ -1,7 +1,4 @@
-"""
-Main entry point for the transformer-based anomaly detection system.
-Demonstrates full OOP usage of the pipeline.
-"""
+"""Entry point demonstrating OOP pipeline usage."""
 
 from .pipeline import AnomalyDetectionPipeline, PipelineFactory, run_anomaly_detection
 from .config.config import (
@@ -20,22 +17,10 @@ class AnomalyDetectionApp:
     """Main application class for anomaly detection."""
 
     def __init__(self, data_path: str):
-        """
-        Initialize application.
-
-        Args:
-            data_path: Path to data file
-        """
         self.data_path = data_path
         self.pipeline: AnomalyDetectionPipeline = None
 
     def run_with_preset(self, preset_name: str = "balanced") -> None:
-        """
-        Run anomaly detection with a preset configuration.
-
-        Args:
-            preset_name: Name of preset configuration
-        """
         print(f"\n{'=' * 70}")
         print(f"RUNNING WITH PRESET: {preset_name.upper()}")
         print(f"{'=' * 70}\n")
@@ -46,12 +31,6 @@ class AnomalyDetectionApp:
         return results
 
     def run_with_custom_config(self, config: PipelineConfig) -> None:
-        """
-        Run anomaly detection with custom configuration.
-
-        Args:
-            config: Custom pipeline configuration
-        """
         print(f"\n{'=' * 70}")
         print("RUNNING WITH CUSTOM CONFIGURATION")
         print(f"{'=' * 70}\n")

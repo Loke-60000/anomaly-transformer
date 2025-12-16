@@ -1,7 +1,4 @@
-"""
-Complete OOP pipeline for transformer-based anomaly detection.
-Orchestrates all components of the system.
-"""
+"""OOP pipeline orchestration for transformer-based anomaly detection."""
 
 import torch
 import torch.nn as nn
@@ -113,12 +110,6 @@ class AnomalyDetectionPipeline:
     """
 
     def __init__(self, config: PipelineConfig):
-        """
-        Initialize the pipeline.
-
-        Args:
-            config: Complete pipeline configuration
-        """
         self.config = config
         self.config_manager = ConfigurationManager(config)
 
@@ -127,7 +118,6 @@ class AnomalyDetectionPipeline:
         self.trainer: Optional[AnomalyDetectionTrainer] = None
         self.results: Optional[AnomalyDetectionResults] = None
 
-        # Validate configuration
         if not self.config_manager.validate():
             raise ValueError("Invalid configuration")
 
@@ -170,12 +160,10 @@ class AnomalyDetectionPipeline:
         print(f"  Parameters: {n_params:,}")
 
     def setup_trainer(self) -> None:
-        """Setup trainer."""
         print("\n" + "=" * 70)
         print("SETTING UP TRAINER")
         print("=" * 70)
 
-        # Convert pipeline config to trainer config
         trainer_config = TrainerConfig(
             learning_rate=self.config.training.learning_rate,
             weight_decay=self.config.training.weight_decay,
