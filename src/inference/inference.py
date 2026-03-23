@@ -14,12 +14,167 @@ from ..models.model import (
 from ..data.data_loader import AnomalyDataLoader
 
 
+# ---------------------------------------------------------------------------
+# Thresholding strategies
+# ---------------------------------------------------------------------------
+
+class ThresholdStrategy:
+    """Base class — override ``fit`` and ``threshold`` property."""
+
+    def fit(self, errors: np.ndarray) -> "ThresholdStrategy":
+        raise NotImplementedError
+
+    @property
+    def threshold(self) -> float:
+        raise NotImplementedError
+
+    def to_dict(self) -> Dict:
+        raise NotImplementedError
+
+
+class PercentileThreshold(ThresholdStrategy):
+    """Original simple percentile (kept for backwards compatibility)."""
+
+    def __init__(self, percentile: float = 95.0):
+        self.percentile = percentile
+        self._threshold: Optional[float] = None
+
+    def fit(self, errors: np.ndarray) -> "PercentileThreshold":
+        self._threshold = float(np.percentile(errors, self.percentile))
+        return self
+
+    @property
+    def threshold(self) -> float:
+        if self._threshold is None:
+            raise ValueError("Call fit() first")
+        return self._threshold
+
+    def to_dict(self) -> Dict:
+        return {"method": "percentile", "percentile": self.percentile,
+                "threshold": self._threshold}
+
+
+class GaussianThreshold(ThresholdStrategy):
+    """Fit N(mu, sigma) to training errors; threshold = mu + k * sigma.
+
+    Much more principled than a fixed percentile: adapts to the actual
+    error distribution shape and is independent of dataset size.
+    ``k=3`` ≈ 99.87th percentile for a true Gaussian; ``k=4`` is stricter.
+    """
+
+    def __init__(self, k: float = 3.0):
+        self.k = k
+        self._mu: Optional[float] = None
+        self._sigma: Optional[float] = None
+        self._threshold: Optional[float] = None
+
+    def fit(self, errors: np.ndarray) -> "GaussianThreshold":
+        self._mu = float(np.mean(errors))
+        self._sigma = float(np.std(errors))
+        self._threshold = self._mu + self.k * self._sigma
+        return self
+
+    @property
+    def threshold(self) -> float:
+        if self._threshold is None:
+            raise ValueError("Call fit() first")
+        return self._threshold
+
+    def to_dict(self) -> Dict:
+        return {"method": "gaussian", "k": self.k,
+                "mu": self._mu, "sigma": self._sigma,
+                "threshold": self._threshold}
+
+
+class POTThreshold(ThresholdStrategy):
+    """Peaks Over Threshold — extreme-value-theory-based adaptive threshold.
+
+    1. Pick an initial ``q``-quantile as the "high" watermark.
+    2. Collect exceedances above that watermark.
+    3. Fit a Generalized Pareto Distribution (GPD) to the exceedances.
+    4. Extrapolate the tail to find the threshold at the desired risk
+       level ``risk_level`` (lower = stricter, e.g. 1e-4).
+
+    This is the gold standard for anomaly thresholding — it adapts to
+    heavy-tailed error distributions where Gaussian assumptions fail.
+    """
+
+    def __init__(self, risk_level: float = 1e-4, q: float = 0.98):
+        self.risk_level = risk_level
+        self.q = q
+        self._threshold: Optional[float] = None
+
+    def fit(self, errors: np.ndarray) -> "POTThreshold":
+        from scipy.stats import genpareto
+
+        t0 = float(np.quantile(errors, self.q))
+        exceedances = errors[errors > t0] - t0
+
+        if len(exceedances) < 10:
+            # Not enough tail data — fall back to Gaussian
+            mu, sigma = float(np.mean(errors)), float(np.std(errors))
+            self._threshold = mu + 4.0 * sigma
+            self._method_used = "gaussian_fallback"
+            return self
+
+        # MLE fit of GPD
+        shape, _, scale = genpareto.fit(exceedances, floc=0)
+
+        # Inverse survival function of the GPD, shifted back
+        n = len(errors)
+        n_exceed = len(exceedances)
+        if shape == 0:
+            self._threshold = t0 + scale * np.log(n_exceed / (n * self.risk_level))
+        else:
+            self._threshold = t0 + (scale / shape) * (
+                (n_exceed / (n * self.risk_level)) ** shape - 1
+            )
+        self._threshold = float(self._threshold)
+        self._method_used = "pot"
+        return self
+
+    @property
+    def threshold(self) -> float:
+        if self._threshold is None:
+            raise ValueError("Call fit() first")
+        return self._threshold
+
+    def to_dict(self) -> Dict:
+        return {"method": "pot", "risk_level": self.risk_level,
+                "q": self.q, "threshold": self._threshold}
+
+
+def create_threshold_strategy(
+    method: str = "gaussian", **kwargs
+) -> ThresholdStrategy:
+    """Factory for threshold strategies.
+
+    Parameters
+    ----------
+    method : str
+        ``"percentile"`` — fixed percentile (default 95).
+        ``"gaussian"``   — mean + k * sigma (default k=3).
+        ``"pot"``        — Peaks Over Threshold / EVT (default risk=1e-4).
+    """
+    strategies = {
+        "percentile": PercentileThreshold,
+        "gaussian": GaussianThreshold,
+        "pot": POTThreshold,
+    }
+    if method not in strategies:
+        raise ValueError(f"Unknown threshold method '{method}'. "
+                         f"Choose from {list(strategies)}")
+    return strategies[method](**kwargs)
+
+
 class AnomalyDetector:
     def __init__(
         self,
         model: nn.Module,
         data_loader: AnomalyDataLoader,
         threshold_percentile: float = 95.0,
+        threshold_method: str = "gaussian",
+        threshold_kwargs: Optional[Dict] = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
         self.model = model.to(device)
@@ -27,6 +182,15 @@ class AnomalyDetector:
         self.data_loader = data_loader
         self.device = device
         self.threshold_percentile = threshold_percentile
+
+        # Build threshold strategy
+        if threshold_kwargs is None:
+            threshold_kwargs = {}
+        if threshold_method == "percentile" and "percentile" not in threshold_kwargs:
+            threshold_kwargs["percentile"] = threshold_percentile
+        self._threshold_strategy = create_threshold_strategy(
+            threshold_method, **threshold_kwargs
+        )
         self.threshold = None
 
     def calculate_reconstruction_errors(
@@ -158,8 +322,10 @@ class AnomalyDetector:
         errors, _ = self.calculate_reconstruction_errors(
             train_data, window_size, stride
         )
-        self.threshold = np.percentile(errors, self.threshold_percentile)
-        print(f"Anomaly threshold (p{self.threshold_percentile}): {self.threshold:.6f}")
+        self._threshold_strategy.fit(errors)
+        self.threshold = self._threshold_strategy.threshold
+        info = self._threshold_strategy.to_dict()
+        print(f"Anomaly threshold ({info['method']}): {self.threshold:.6f}")
 
         return self.threshold
 

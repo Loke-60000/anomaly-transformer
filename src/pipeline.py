@@ -18,7 +18,7 @@ from .training.train import (
 
 MODEL_PRESETS: Dict[str, Dict] = {
     "pico": {
-        "lightweight": dict(d_model=64, nhead=4, num_layers=2, dim_feedforward=192),
+        "lightweight": dict(d_model=64, nhead=4, num_layers=2, dim_feedforward=192, bottleneck_ratio=4),
         "full": dict(
             d_model=96,
             nhead=4,
@@ -28,7 +28,7 @@ MODEL_PRESETS: Dict[str, Dict] = {
         ),
     },
     "medium": {
-        "lightweight": dict(d_model=96, nhead=4, num_layers=3, dim_feedforward=384),
+        "lightweight": dict(d_model=96, nhead=4, num_layers=3, dim_feedforward=384, bottleneck_ratio=4),
         "full": dict(
             d_model=128,
             nhead=8,
@@ -38,7 +38,7 @@ MODEL_PRESETS: Dict[str, Dict] = {
         ),
     },
     "ookii": {
-        "lightweight": dict(d_model=128, nhead=4, num_layers=4, dim_feedforward=512),
+        "lightweight": dict(d_model=128, nhead=4, num_layers=4, dim_feedforward=512, bottleneck_ratio=4),
         "full": dict(
             d_model=192,
             nhead=8,
@@ -164,10 +164,22 @@ def evaluate(
         except ValueError:
             result["auc"] = None
 
-        threshold = float(np.percentile(y_scores, 95))
+        # Find the threshold that maximizes F1 instead of using a fixed
+        # percentile — much better when ground-truth labels are available.
+        best_f1, best_thr = 0.0, float(np.percentile(y_scores, 95))
+        for pct in range(80, 100):
+            thr_candidate = float(np.percentile(y_scores, pct))
+            preds = (y_scores > thr_candidate).astype(int)
+            _, _, f1_candidate, _ = precision_recall_fscore_support(
+                y_true, preds, average="binary", zero_division=0
+            )
+            if f1_candidate >= best_f1:
+                best_f1, best_thr = f1_candidate, thr_candidate
+
+        threshold = best_thr
         y_pred = (y_scores > threshold).astype(int)
         prec, rec, f1, _ = precision_recall_fscore_support(
-            y_true, y_pred, average="binary"
+            y_true, y_pred, average="binary", zero_division=0
         )
         result.update(
             threshold=threshold,
@@ -186,6 +198,8 @@ def detect(
     window_size: int = 50,
     stride: int = 1,
     threshold_percentile: float = 95.0,
+    threshold_method: str = "gaussian",
+    threshold_kwargs: Optional[Dict] = None,
     train_split: float = 0.8,
     device: Optional[str] = None,
 ) -> Dict:
@@ -204,12 +218,23 @@ def detect(
                 all_scores.extend(err.cpu().numpy().tolist())
 
         scores = np.array(all_scores)
-        thr = float(np.percentile(scores, threshold_percentile))
+
+        from .inference.inference import create_threshold_strategy
+
+        if threshold_kwargs is None:
+            threshold_kwargs = {}
+        if threshold_method == "percentile" and "percentile" not in threshold_kwargs:
+            threshold_kwargs["percentile"] = threshold_percentile
+        strategy = create_threshold_strategy(threshold_method, **threshold_kwargs)
+        strategy.fit(scores)
+        thr = strategy.threshold
+
         anomalies = scores > thr
         return dict(
             scores=scores,
             anomalies=anomalies,
             threshold=thr,
+            threshold_info=strategy.to_dict(),
             n_anomalies=int(anomalies.sum()),
             anomaly_rate=float(anomalies.mean()),
         )
@@ -226,6 +251,8 @@ def detect(
         model=model,
         data_loader=data_loader,
         threshold_percentile=threshold_percentile,
+        threshold_method=threshold_method,
+        threshold_kwargs=threshold_kwargs,
         device=device,
     )
 

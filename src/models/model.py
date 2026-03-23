@@ -53,6 +53,12 @@ class BaseAutoencoder(nn.Module, ABC):
 
 
 class TransformerAutoencoder(BaseAutoencoder):
+    """Full encoder-decoder transformer autoencoder.
+
+    The decoder uses **learned query tokens** instead of the raw input, so
+    reconstruction must pass through the encoder's compressed memory —
+    creating a genuine information bottleneck.
+    """
 
     def __init__(
         self,
@@ -64,15 +70,24 @@ class TransformerAutoencoder(BaseAutoencoder):
         dim_feedforward: int = 256,
         dropout: float = 0.1,
         activation: str = "gelu",
+        max_seq_len: int = 512,
     ):
         super().__init__()
 
         self.d_model = d_model
         self.input_dim = input_dim
+        self.max_seq_len = max_seq_len
 
         self.input_projection = nn.Linear(input_dim, d_model)
         self.output_projection = nn.Linear(d_model, input_dim)
         self.pos_encoder = PositionalEncoding(d_model, dropout=dropout)
+
+        # Learned decoder queries — the decoder cannot see the raw input.
+        # Shape (max_seq_len, d_model); sliced to actual seq_len at runtime.
+        self.decoder_queries = nn.Parameter(
+            torch.randn(max_seq_len, d_model) * 0.02
+        )
+        self.decoder_pos = PositionalEncoding(d_model, dropout=dropout)
 
         self.encoder = self._build_encoder(
             d_model, nhead, num_encoder_layers, dim_feedforward, dropout, activation
@@ -124,11 +139,19 @@ class TransformerAutoencoder(BaseAutoencoder):
     def forward(
         self, src: torch.Tensor, src_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        src = src.transpose(0, 1)
-        src = self.pos_encoder(self.input_projection(src))
-        memory = self.encoder(src, src_mask)
-        output = self.decoder(src, memory)
-        return self.output_projection(output).transpose(0, 1)
+        # src: (batch, seq_len, input_dim)
+        seq_len, batch_size = src.size(1), src.size(0)
+
+        src_t = src.transpose(0, 1)                              # (S, B, F)
+        projected = self.pos_encoder(self.input_projection(src_t))  # (S, B, D)
+        memory = self.encoder(projected, src_mask)                # (S, B, D)
+
+        # Learned queries — no access to raw input
+        tgt = self.decoder_queries[:seq_len].unsqueeze(1).expand(-1, batch_size, -1)
+        tgt = self.decoder_pos(tgt)                               # (S, B, D)
+
+        output = self.decoder(tgt, memory)                        # (S, B, D)
+        return self.output_projection(output).transpose(0, 1)    # (B, S, F)
 
     def encode(self, src: torch.Tensor) -> torch.Tensor:
         src = src.transpose(0, 1)
@@ -137,6 +160,12 @@ class TransformerAutoencoder(BaseAutoencoder):
 
 
 class LightweightTransformerAutoencoder(BaseAutoencoder):
+    """Shared-encoder transformer with a configurable bottleneck.
+
+    The ``bottleneck_ratio`` controls how aggressively the latent space is
+    compressed.  A ratio of 4 (default) maps ``d_model → d_model/4 → d_model``,
+    giving a much tighter information bottleneck than the previous ``d_model/2``.
+    """
 
     def __init__(
         self,
@@ -146,6 +175,7 @@ class LightweightTransformerAutoencoder(BaseAutoencoder):
         num_layers: int = 2,
         dim_feedforward: int = 128,
         dropout: float = 0.1,
+        bottleneck_ratio: int = 4,
     ):
         super().__init__()
 
@@ -158,7 +188,7 @@ class LightweightTransformerAutoencoder(BaseAutoencoder):
         self.transformer = self._build_transformer(
             d_model, nhead, num_layers, dim_feedforward, dropout
         )
-        self.bottleneck = self._build_bottleneck(d_model)
+        self.bottleneck = self._build_bottleneck(d_model, bottleneck_ratio)
 
         self._init_weights()
 
@@ -180,11 +210,13 @@ class LightweightTransformerAutoencoder(BaseAutoencoder):
         )
         return nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-    def _build_bottleneck(self, d_model: int) -> nn.Sequential:
+    def _build_bottleneck(self, d_model: int, ratio: int) -> nn.Sequential:
+        latent = max(d_model // ratio, 4)  # floor at 4 dims
         return nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
+            nn.Linear(d_model, latent),
             nn.GELU(),
-            nn.Linear(d_model // 2, d_model),
+            nn.LayerNorm(latent),
+            nn.Linear(latent, d_model),
         )
 
     def forward(self, src: torch.Tensor) -> torch.Tensor:
