@@ -34,3 +34,9 @@ htmlcov/
 .ruff_cache/
 .ipynb_checkpoints/
 .env
+
+# Data files — never commit raw sensor/energy data
+*.csv
+*.xlsx
+*.xls
+data/
