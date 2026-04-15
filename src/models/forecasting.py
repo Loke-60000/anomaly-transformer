@@ -18,24 +18,30 @@ class PositionalEncoding(nn.Module):
     def forward(self,x : torch.Tensor) -> torch.Tensor:
         x = x + self.pe[: x.size(0)]
         return self.dropout(x)
+
+
 class ForecastingTransformer(nn.Module):
     def __init__(self,input_dim=3,d_model=64,nhead=4,num_layers=3,dim_feedforward=256,dropout=0.1):
         super().__init__()
         self.input_projection = nn.Linear(input_dim,d_model)
         self.pos_encoder = PositionalEncoding(d_model,dropout=dropout)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model,
-    nhead=nhead,
-    dim_feedforward=dim_feedforward,
-    dropout=dropout,
-    activation="gelu",
-    batch_first=False,)
-        self.transformer = nn.TransformerEncoder(encoder_layer,num_layers=num_layers)
-        self.output_projection = nn.Linear(d_model,input_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=False,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.output_projection = nn.Linear(d_model, input_dim)
         self._init_weights()
+
     def _init_weights(self):
         for p in self.parameters():
-            if p.dim()>1:
+            if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (batch, seq_len, input_dim)
         x = x.transpose(0, 1)                                          # (seq_len, batch, input_dim)
