@@ -40,3 +40,8 @@ htmlcov/
 *.xlsx
 *.xls
 data/
+# Generated plots
+*.png
+
+# Claude Code settings and memory
+.claude/
